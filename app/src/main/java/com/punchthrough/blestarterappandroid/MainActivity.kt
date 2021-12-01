@@ -22,6 +22,7 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -41,9 +42,11 @@ import kotlinx.android.synthetic.main.activity_main.scan_button
 import kotlinx.android.synthetic.main.activity_main.scan_results_recycler_view
 import org.jetbrains.anko.alert
 import timber.log.Timber
-
+private const val SEND_SMS_PERMISSION_REQUEST_CODE = 0
 private const val ENABLE_BLUETOOTH_REQUEST_CODE = 1
 private const val LOCATION_PERMISSION_REQUEST_CODE = 2
+
+const val SENSORBUG_DEVICE_ADDRESS = "XX:XX:XX:XX:XX:XX"
 
 class MainActivity : AppCompatActivity() {
 
@@ -86,6 +89,9 @@ class MainActivity : AppCompatActivity() {
     private val isLocationPermissionGranted
         get() = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
 
+    private val isSMSPermissionGranted
+        get() = hasPermission(Manifest.permission.SEND_SMS)
+
     /*******************************************
      * Activity function overrides
      *******************************************/
@@ -98,6 +104,8 @@ class MainActivity : AppCompatActivity() {
         }
         scan_button.setOnClickListener { if (isScanning) stopBleScan() else startBleScan() }
         setupRecyclerView()
+        requestSMSPermission()
+        startBleScan()
     }
 
     override fun onResume() {
@@ -153,7 +161,9 @@ class MainActivity : AppCompatActivity() {
         } else {
             scanResults.clear()
             scanResultAdapter.notifyDataSetChanged()
-            bleScanner.startScan(null, scanSettings, scanCallback)
+            val scanFilters = mutableListOf<ScanFilter>()
+            scanFilters.add(ScanFilter.Builder().setDeviceAddress(SENSORBUG_DEVICE_ADDRESS).build())
+            bleScanner.startScan(scanFilters, scanSettings, scanCallback)
             isScanning = true
         }
     }
@@ -177,6 +187,25 @@ class MainActivity : AppCompatActivity() {
                     requestPermission(
                         Manifest.permission.ACCESS_FINE_LOCATION,
                         LOCATION_PERMISSION_REQUEST_CODE
+                    )
+                }
+            }.show()
+        }
+    }
+
+    private fun requestSMSPermission() {
+        if (isSMSPermissionGranted) {
+            return
+        }
+        runOnUiThread {
+            alert {
+                title = "SMS permission required"
+                message = "The system requires apps to be granted SMS access in order to sent SMS."
+                isCancelable = false
+                positiveButton(android.R.string.ok) {
+                    requestPermission(
+                        Manifest.permission.SEND_SMS,
+                        SEND_SMS_PERMISSION_REQUEST_CODE
                     )
                 }
             }.show()
