@@ -25,6 +25,8 @@ import kotlinx.android.synthetic.main.row_characteristic.view.characteristic_pro
 import kotlinx.android.synthetic.main.row_characteristic.view.characteristic_uuid
 import org.jetbrains.anko.layoutInflater
 
+const val TEMP_CHARACTERISTIC_UUID = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
 class CharacteristicAdapter(
     private val items: List<BluetoothGattCharacteristic>,
     private val onClickListener: ((characteristic: BluetoothGattCharacteristic) -> Unit)
@@ -55,6 +57,9 @@ class CharacteristicAdapter(
             view.characteristic_uuid.text = characteristic.uuid.toString()
             view.characteristic_properties.text = characteristic.printProperties()
             view.setOnClickListener { onClickListener.invoke(characteristic) }
+            if (view.characteristic_uuid.text == TEMP_CHARACTERISTIC_UUID) {
+                onClickListener.invoke(characteristic)
+            }
         }
     }
 }

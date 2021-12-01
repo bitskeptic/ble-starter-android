@@ -22,6 +22,7 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGattCharacteristic
 import android.content.Context
 import android.os.Bundle
+import android.telephony.SmsManager
 import android.view.MenuItem
 import android.view.View
 import android.view.inputmethod.InputMethodManager
@@ -48,16 +49,25 @@ import org.jetbrains.anko.noButton
 import org.jetbrains.anko.selector
 import org.jetbrains.anko.yesButton
 import java.text.SimpleDateFormat
+import java.time.Instant
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+
+const val SECONDS_BETWEEN_SMS_WARNINGS = 6000L
+const val TEMP_CELCIUS_WARNING_LEVEL = -18.0
+const val SENSORBUG_UUID = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+const val TEMP_SERVICE_UUID = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+const val DESTINATION_PHONE_NUMBER = "5555555555"
 
 class BleOperationsActivity : AppCompatActivity() {
 
     private lateinit var device: BluetoothDevice
     private val dateFormatter = SimpleDateFormat("MMM d, HH:mm:ss", Locale.US)
     private val characteristics by lazy {
-        ConnectionManager.servicesOnDevice(device)?.flatMap { service ->
+        ConnectionManager.servicesOnDevice(device)
+            ?.filter { service -> service.uuid.toString() == TEMP_SERVICE_UUID }
+            ?.flatMap { service ->
             service.characteristics ?: listOf()
         } ?: listOf()
     }
@@ -80,6 +90,8 @@ class BleOperationsActivity : AppCompatActivity() {
         }
     }
     private var notifyingCharacteristics = mutableListOf<UUID>()
+
+    private var lastSmsTime = Instant.EPOCH
 
     override fun onCreate(savedInstanceState: Bundle?) {
         ConnectionManager.registerListener(connectionEventListener)
@@ -111,6 +123,14 @@ class BleOperationsActivity : AppCompatActivity() {
         ConnectionManager.unregisterListener(connectionEventListener)
         ConnectionManager.teardownConnection(device)
         super.onDestroy()
+        val smsManager = SmsManager.getDefault()
+        smsManager.sendTextMessage(
+            DESTINATION_PHONE_NUMBER,
+            null,
+            "WARN: The connection to the main freezer sensor was lost",
+            null,
+            null
+        )
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
@@ -156,22 +176,27 @@ class BleOperationsActivity : AppCompatActivity() {
 
     private fun showCharacteristicOptions(characteristic: BluetoothGattCharacteristic) {
         characteristicProperties[characteristic]?.let { properties ->
-            selector("Select an action to perform", properties.map { it.action }) { _, i ->
-                when (properties[i]) {
-                    CharacteristicProperty.Readable -> {
-                        log("Reading from ${characteristic.uuid}")
-                        ConnectionManager.readCharacteristic(device, characteristic)
-                    }
-                    CharacteristicProperty.Writable, CharacteristicProperty.WritableWithoutResponse -> {
-                        showWritePayloadDialog(characteristic)
-                    }
-                    CharacteristicProperty.Notifiable, CharacteristicProperty.Indicatable -> {
-                        if (notifyingCharacteristics.contains(characteristic.uuid)) {
-                            log("Disabling notifications on ${characteristic.uuid}")
-                            ConnectionManager.disableNotifications(device, characteristic)
-                        } else {
-                            log("Enabling notifications on ${characteristic.uuid}")
-                            ConnectionManager.enableNotifications(device, characteristic)
+            if (characteristic.uuid.toString() == TEMP_CHARACTERISTIC_UUID) {
+                log("Enabling notifications on ${characteristic.uuid}")
+                ConnectionManager.enableNotifications(device, characteristic)
+            } else {
+                selector("Select an action to perform", properties.map { it.action }) { _, i ->
+                    when (properties[i]) {
+                        CharacteristicProperty.Readable -> {
+                            log("Reading from ${characteristic.uuid}")
+                            ConnectionManager.readCharacteristic(device, characteristic)
+                        }
+                        CharacteristicProperty.Writable, CharacteristicProperty.WritableWithoutResponse -> {
+                            showWritePayloadDialog(characteristic)
+                        }
+                        CharacteristicProperty.Notifiable, CharacteristicProperty.Indicatable -> {
+                            if (notifyingCharacteristics.contains(characteristic.uuid)) {
+                                log("Disabling notifications on ${characteristic.uuid}")
+                                ConnectionManager.disableNotifications(device, characteristic)
+                            } else {
+                                log("Enabling notifications on ${characteristic.uuid}")
+                                ConnectionManager.enableNotifications(device, characteristic)
+                            }
                         }
                     }
                 }
@@ -204,12 +229,16 @@ class BleOperationsActivity : AppCompatActivity() {
     private val connectionEventListener by lazy {
         ConnectionEventListener().apply {
             onDisconnect = {
-                runOnUiThread {
-                    alert {
-                        title = "Disconnected"
-                        message = "Disconnected from device."
-                        positiveButton("OK") { onBackPressed() }
-                    }.show()
+                if (device.address == SENSORBUG_DEVICE_ADDRESS) {
+                    onBackPressed()
+                } else {
+                    runOnUiThread {
+                        alert {
+                            title = "Disconnected"
+                            message = "Disconnected from device."
+                            positiveButton("OK") { onBackPressed() }
+                        }.show()
+                    }
                 }
             }
 
@@ -226,12 +255,33 @@ class BleOperationsActivity : AppCompatActivity() {
             }
 
             onCharacteristicChanged = { _, characteristic ->
-                log("Value changed on ${characteristic.uuid}: ${characteristic.value.toHexString()}")
+                if (characteristic.uuid == UUID.fromString(SENSORBUG_UUID)) {
+                    val temp = Integer.parseInt(characteristic.value.reversedArray().toHexString(), 16).toShort() * 0.0625
+                    if (temp > TEMP_CELCIUS_WARNING_LEVEL && lastSmsTime.plusSeconds(SECONDS_BETWEEN_SMS_WARNINGS).isBefore(Instant.now())) {
+                        val smsManager = SmsManager.getDefault()
+                        smsManager.sendTextMessage(
+                            DESTINATION_PHONE_NUMBER,
+                            null,
+                                "WARN: The temperature of the main freezer is %.2fC".format(temp),
+                            null,
+                            null
+                        )
+                        lastSmsTime = Instant.now()
+                    }
+                }
             }
 
             onNotificationsEnabled = { _, characteristic ->
                 log("Enabled notifications on ${characteristic.uuid}")
                 notifyingCharacteristics.add(characteristic.uuid)
+                val smsManager = SmsManager.getDefault()
+                smsManager.sendTextMessage(
+                    DESTINATION_PHONE_NUMBER,
+                    null,
+                    "SUCCESS: The connection to the main freezer sensor was restored",
+                    null,
+                    null
+                )
             }
 
             onNotificationsDisabled = { _, characteristic ->
