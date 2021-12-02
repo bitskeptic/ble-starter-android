@@ -1,2 +1,2 @@
 include ':app'
-rootProject.name='BLE Starter'
+rootProject.name='SensorBug'

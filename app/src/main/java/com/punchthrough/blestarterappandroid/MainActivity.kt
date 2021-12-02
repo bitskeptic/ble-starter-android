@@ -114,6 +114,9 @@ class MainActivity : AppCompatActivity() {
         if (!bluetoothAdapter.isEnabled) {
             promptEnableBluetooth()
         }
+        if (!isScanning) {
+            startBleScan()
+        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
