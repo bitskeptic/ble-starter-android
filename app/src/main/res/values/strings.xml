@@ -15,6 +15,6 @@
   -->
 
 <resources>
-    <string name="app_name">BLE Starter</string>
-    <string name="ble_playground">BLE Playground</string>
+    <string name="app_name">SensorBug</string>
+    <string name="ble_playground">SensorBug Characteristics</string>
 </resources>
