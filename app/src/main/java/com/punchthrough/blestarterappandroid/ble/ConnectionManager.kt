@@ -358,6 +358,9 @@ object ConnectionManager {
                     signalEndOfOperation()
                 }
                 teardownConnection(gatt.device)
+                with(gatt.device) {
+                    listeners.forEach { it.get()?.onConnectionFailed?.invoke(this) }
+                }
             }
         }
 
