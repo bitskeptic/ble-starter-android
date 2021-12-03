@@ -33,4 +33,5 @@ class ConnectionEventListener {
     var onNotificationsEnabled: ((BluetoothDevice, BluetoothGattCharacteristic) -> Unit)? = null
     var onNotificationsDisabled: ((BluetoothDevice, BluetoothGattCharacteristic) -> Unit)? = null
     var onMtuChanged: ((BluetoothDevice, Int) -> Unit)? = null
+    var onConnectionFailed: ((BluetoothDevice) -> Unit)? = null
 }

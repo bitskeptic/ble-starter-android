@@ -16,106 +16,99 @@
 
 package com.punchthrough.blestarterappandroid
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.telephony.SmsManager
-import android.view.MenuItem
 import android.view.View
-import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
 import androidx.appcompat.app.AppCompatActivity
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
-import androidx.recyclerview.widget.SimpleItemAnimator
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.punchthrough.blestarterappandroid.ble.ConnectionEventListener
 import com.punchthrough.blestarterappandroid.ble.ConnectionManager
-import com.punchthrough.blestarterappandroid.ble.isIndicatable
-import com.punchthrough.blestarterappandroid.ble.isNotifiable
-import com.punchthrough.blestarterappandroid.ble.isReadable
-import com.punchthrough.blestarterappandroid.ble.isWritable
-import com.punchthrough.blestarterappandroid.ble.isWritableWithoutResponse
 import com.punchthrough.blestarterappandroid.ble.toHexString
-import kotlinx.android.synthetic.main.activity_ble_operations.characteristics_recycler_view
 import kotlinx.android.synthetic.main.activity_ble_operations.log_scroll_view
 import kotlinx.android.synthetic.main.activity_ble_operations.log_text_view
-import kotlinx.android.synthetic.main.activity_ble_operations.mtu_field
-import kotlinx.android.synthetic.main.activity_ble_operations.request_mtu_button
 import org.jetbrains.anko.alert
-import org.jetbrains.anko.noButton
-import org.jetbrains.anko.selector
-import org.jetbrains.anko.yesButton
+import timber.log.Timber
 import java.text.SimpleDateFormat
 import java.time.Instant
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
-const val SECONDS_BETWEEN_SMS_WARNINGS = 6000L
-const val TEMP_CELCIUS_WARNING_LEVEL = -18.0
+private const val SEND_SMS_PERMISSION_REQUEST_CODE = 0
+private const val ENABLE_BLUETOOTH_REQUEST_CODE = 1
+private const val LOCATION_PERMISSION_REQUEST_CODE = 2
+private const val PERMISSION_REQUEST_BACKGROUND_LOCATION = 3
+
+const val SECONDS_BETWEEN_SMS_WARNINGS = 600L
+const val TEMP_CELCIUS_WARNING_LEVEL = -15.0
 const val SENSORBUG_UUID = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
-const val TEMP_SERVICE_UUID = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-const val DESTINATION_PHONE_NUMBER = "5555555555"
+const val TEMP_SERVICE_UUID = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+const val TEMP_CHARACTERISTIC_UUID = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+const val DESTINATION_PHONE_NUMBER = "XXXXXXXXXX"
+const val SENSORBUG_DEVICE_ADDRESS = "XX:XX:XX:XX:XX:XX"
 
 class BleOperationsActivity : AppCompatActivity() {
 
+    /*******************************************
+     * Properties
+     *******************************************/
+
+    private val bluetoothAdapter: BluetoothAdapter by lazy {
+        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        bluetoothManager.adapter
+    }
+
+    private val bleScanner by lazy {
+        bluetoothAdapter.bluetoothLeScanner
+    }
+
+    private val scanSettings = ScanSettings.Builder()
+        .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+        .build()
+
+    private var isScanning = false
+    private val scanResults = mutableListOf<ScanResult>()
+
     private lateinit var device: BluetoothDevice
     private val dateFormatter = SimpleDateFormat("MMM d, HH:mm:ss", Locale.US)
-    private val characteristics by lazy {
-        ConnectionManager.servicesOnDevice(device)
-            ?.filter { service -> service.uuid.toString() == TEMP_SERVICE_UUID }
-            ?.flatMap { service ->
-            service.characteristics ?: listOf()
-        } ?: listOf()
-    }
-    private val characteristicProperties by lazy {
-        characteristics.map { characteristic ->
-            characteristic to mutableListOf<CharacteristicProperty>().apply {
-                if (characteristic.isNotifiable()) add(CharacteristicProperty.Notifiable)
-                if (characteristic.isIndicatable()) add(CharacteristicProperty.Indicatable)
-                if (characteristic.isReadable()) add(CharacteristicProperty.Readable)
-                if (characteristic.isWritable()) add(CharacteristicProperty.Writable)
-                if (characteristic.isWritableWithoutResponse()) {
-                    add(CharacteristicProperty.WritableWithoutResponse)
-                }
-            }.toList()
-        }.toMap()
-    }
-    private val characteristicAdapter: CharacteristicAdapter by lazy {
-        CharacteristicAdapter(characteristics) { characteristic ->
-            showCharacteristicOptions(characteristic)
-        }
-    }
     private var notifyingCharacteristics = mutableListOf<UUID>()
 
     private var lastSmsTime = Instant.EPOCH
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        ConnectionManager.registerListener(connectionEventListener)
-        super.onCreate(savedInstanceState)
-        device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-            ?: error("Missing BluetoothDevice from MainActivity!")
+    private val isLocationPermissionGranted
+        get() = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
 
+    private val isBackgroundLocationPermissionGranted
+        get() = hasPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+
+    private val isSMSPermissionGranted
+        get() = hasPermission(Manifest.permission.SEND_SMS)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        ConnectionManager.registerListener(connectionEventListener)
         setContentView(R.layout.activity_ble_operations)
-        supportActionBar?.apply {
-            setDisplayHomeAsUpEnabled(true)
-            setDisplayShowTitleEnabled(true)
-            title = getString(R.string.ble_playground)
+        requestSMSPermission()
+        if (!isScanning) {
+            startBleScan()
         }
-        setupRecyclerView()
-        request_mtu_button.setOnClickListener {
-            if (mtu_field.text.isNotEmpty() && mtu_field.text.isNotBlank()) {
-                mtu_field.text.toString().toIntOrNull()?.let { mtu ->
-                    log("Requesting for MTU value of $mtu")
-                    ConnectionManager.requestMtu(device, mtu)
-                } ?: log("Invalid MTU value: ${mtu_field.text}")
-            } else {
-                log("Please specify a numeric value for desired ATT MTU (23-517)")
-            }
-            hideKeyboard()
+        if (BuildConfig.DEBUG) {
+            Timber.plant(Timber.DebugTree())
         }
     }
 
@@ -123,40 +116,38 @@ class BleOperationsActivity : AppCompatActivity() {
         ConnectionManager.unregisterListener(connectionEventListener)
         ConnectionManager.teardownConnection(device)
         super.onDestroy()
-        val smsManager = SmsManager.getDefault()
-        smsManager.sendTextMessage(
-            DESTINATION_PHONE_NUMBER,
-            null,
-            "WARN: The connection to the main freezer sensor was lost",
-            null,
-            null
-        )
+        log("Destroy Complete")
     }
 
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        when (item.itemId) {
-            android.R.id.home -> {
-                onBackPressed()
-                return true
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        when (requestCode) {
+            ENABLE_BLUETOOTH_REQUEST_CODE -> {
+                if (resultCode != Activity.RESULT_OK) {
+                    promptEnableBluetooth()
+                }
             }
         }
-        return super.onOptionsItemSelected(item)
     }
 
-    private fun setupRecyclerView() {
-        characteristics_recycler_view.apply {
-            adapter = characteristicAdapter
-            layoutManager = LinearLayoutManager(
-                this@BleOperationsActivity,
-                RecyclerView.VERTICAL,
-                false
-            )
-            isNestedScrollingEnabled = false
-        }
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        when (requestCode) {
+            LOCATION_PERMISSION_REQUEST_CODE -> {
+                if (grantResults.firstOrNull() == PackageManager.PERMISSION_DENIED) {
+                    requestLocationPermission()
+                }
+            }
 
-        val animator = characteristics_recycler_view.itemAnimator
-        if (animator is SimpleItemAnimator) {
-            animator.supportsChangeAnimations = false
+            PERMISSION_REQUEST_BACKGROUND_LOCATION -> {
+                if (grantResults.firstOrNull() == PackageManager.PERMISSION_DENIED) {
+                    requestBackgroundLocationPermission()
+                }
+            }
         }
     }
 
@@ -174,72 +165,38 @@ class BleOperationsActivity : AppCompatActivity() {
         }
     }
 
-    private fun showCharacteristicOptions(characteristic: BluetoothGattCharacteristic) {
-        characteristicProperties[characteristic]?.let { properties ->
-            if (characteristic.uuid.toString() == TEMP_CHARACTERISTIC_UUID) {
-                log("Enabling notifications on ${characteristic.uuid}")
-                ConnectionManager.enableNotifications(device, characteristic)
-            } else {
-                selector("Select an action to perform", properties.map { it.action }) { _, i ->
-                    when (properties[i]) {
-                        CharacteristicProperty.Readable -> {
-                            log("Reading from ${characteristic.uuid}")
-                            ConnectionManager.readCharacteristic(device, characteristic)
-                        }
-                        CharacteristicProperty.Writable, CharacteristicProperty.WritableWithoutResponse -> {
-                            showWritePayloadDialog(characteristic)
-                        }
-                        CharacteristicProperty.Notifiable, CharacteristicProperty.Indicatable -> {
-                            if (notifyingCharacteristics.contains(characteristic.uuid)) {
-                                log("Disabling notifications on ${characteristic.uuid}")
-                                ConnectionManager.disableNotifications(device, characteristic)
-                            } else {
-                                log("Enabling notifications on ${characteristic.uuid}")
-                                ConnectionManager.enableNotifications(device, characteristic)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    @SuppressLint("InflateParams")
-    private fun showWritePayloadDialog(characteristic: BluetoothGattCharacteristic) {
-        val hexField = layoutInflater.inflate(R.layout.edittext_hex_payload, null) as EditText
-        alert {
-            customView = hexField
-            isCancelable = false
-            yesButton {
-                with(hexField.text.toString()) {
-                    if (isNotBlank() && isNotEmpty()) {
-                        val bytes = hexToBytes()
-                        log("Writing to ${characteristic.uuid}: ${bytes.toHexString()}")
-                        ConnectionManager.writeCharacteristic(device, characteristic, bytes)
-                    } else {
-                        log("Please enter a hex payload to write to ${characteristic.uuid}")
-                    }
-                }
-            }
-            noButton {}
-        }.show()
-        hexField.showKeyboard()
-    }
-
     private val connectionEventListener by lazy {
         ConnectionEventListener().apply {
+
+            onConnectionSetupComplete = { gatt ->
+                log("Connected to device")
+                device = gatt.device
+                val characteristics = ConnectionManager.servicesOnDevice(device)
+                    ?.filter { service -> service.uuid.toString() == TEMP_SERVICE_UUID }
+                    ?.flatMap { service ->
+                        service.characteristics?.filter { characteristic -> characteristic.uuid.toString() == TEMP_CHARACTERISTIC_UUID }
+                            ?: listOf()
+                    } ?: listOf()
+                ConnectionManager.enableNotifications(device, characteristics[0])
+            }
+
             onDisconnect = {
-                if (device.address == SENSORBUG_DEVICE_ADDRESS) {
-                    onBackPressed()
-                } else {
-                    runOnUiThread {
-                        alert {
-                            title = "Disconnected"
-                            message = "Disconnected from device."
-                            positiveButton("OK") { onBackPressed() }
-                        }.show()
-                    }
-                }
+                val smsManager = SmsManager.getDefault()
+                smsManager.sendTextMessage(
+                    DESTINATION_PHONE_NUMBER,
+                    null,
+                    "WARN: The connection to the main freezer sensor was lost",
+                    null,
+                    null
+                )
+                log("Connection lost")
+                startBleScan()
+            }
+
+            onConnectionFailed = {
+                log("Connection failed")
+                stopBleScan()
+                startBleScan()
             }
 
             onCharacteristicRead = { _, characteristic ->
@@ -256,13 +213,19 @@ class BleOperationsActivity : AppCompatActivity() {
 
             onCharacteristicChanged = { _, characteristic ->
                 if (characteristic.uuid == UUID.fromString(SENSORBUG_UUID)) {
-                    val temp = Integer.parseInt(characteristic.value.reversedArray().toHexString(), 16).toShort() * 0.0625
-                    if (temp > TEMP_CELCIUS_WARNING_LEVEL && lastSmsTime.plusSeconds(SECONDS_BETWEEN_SMS_WARNINGS).isBefore(Instant.now())) {
+                    val temp =
+                        Integer.parseInt(characteristic.value.reversedArray().toHexString(), 16)
+                            .toShort() * 0.0625
+                    if (temp > TEMP_CELCIUS_WARNING_LEVEL && lastSmsTime.plusSeconds(
+                            SECONDS_BETWEEN_SMS_WARNINGS
+                        ).isBefore(Instant.now())
+                    ) {
+                        log("Freezer temp is $temp. Sending SMS warning.")
                         val smsManager = SmsManager.getDefault()
                         smsManager.sendTextMessage(
                             DESTINATION_PHONE_NUMBER,
                             null,
-                                "WARN: The temperature of the main freezer is %.2fC".format(temp),
+                            "WARN: The temperature of the main freezer is %.2fC".format(temp),
                             null,
                             null
                         )
@@ -291,38 +254,134 @@ class BleOperationsActivity : AppCompatActivity() {
         }
     }
 
-    private enum class CharacteristicProperty {
-        Readable,
-        Writable,
-        WritableWithoutResponse,
-        Notifiable,
-        Indicatable;
+    private fun startBleScan() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !isLocationPermissionGranted) {
+            val smsManager = SmsManager.getDefault()
+            smsManager.sendTextMessage(
+                DESTINATION_PHONE_NUMBER,
+                null,
+                "WARN: Location permission denied",
+                null,
+                null
+            )
+            requestLocationPermission()
+        } else if (!isBackgroundLocationPermissionGranted) {
+            requestBackgroundLocationPermission()
+        } else {
+            scanResults.clear()
+            val scanFilters = mutableListOf<ScanFilter>()
+            scanFilters.add(ScanFilter.Builder().setDeviceAddress(SENSORBUG_DEVICE_ADDRESS).build())
+            bleScanner.startScan(scanFilters, scanSettings, scanCallback)
+            isScanning = true
+            log("Starting BLE Scan")
+        }
+    }
 
-        val action
-            get() = when (this) {
-                Readable -> "Read"
-                Writable -> "Write"
-                WritableWithoutResponse -> "Write Without Response"
-                Notifiable -> "Toggle Notifications"
-                Indicatable -> "Toggle Indications"
+    private fun stopBleScan() {
+        bleScanner.stopScan(scanCallback)
+        isScanning = false
+        log("BLE Scan Stopped")
+    }
+
+    /*******************************************
+     * Callback bodies
+     *******************************************/
+
+    private val scanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            with(result.device) {
+                Timber.i("Found BLE device! Name: ${name ?: "Unnamed"}, address: $address")
+                log("Found device, connecting...")
+                Timber.w("Connecting to $address")
+                stopBleScan()
+                ConnectionManager.connect(this, this@BleOperationsActivity)
             }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            Timber.e("onScanFailed: code $errorCode")
+            log("Scan failed")
+            stopBleScan()
+        }
     }
 
-    private fun Activity.hideKeyboard() {
-        hideKeyboard(currentFocus ?: View(this))
+    private fun requestLocationPermission() {
+        if (isLocationPermissionGranted) {
+            return
+        }
+        runOnUiThread {
+            alert {
+                title = "Location permission required"
+                message = "Starting from Android M (6.0), the system requires apps to be granted " +
+                    "location access in order to scan for BLE devices."
+                isCancelable = false
+                positiveButton(android.R.string.ok) {
+                    requestPermission(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        LOCATION_PERMISSION_REQUEST_CODE
+                    )
+                }
+            }.show()
+        }
     }
 
-    private fun Context.hideKeyboard(view: View) {
-        val inputMethodManager = getSystemService(Activity.INPUT_METHOD_SERVICE) as InputMethodManager
-        inputMethodManager.hideSoftInputFromWindow(view.windowToken, 0)
+    private fun requestBackgroundLocationPermission() {
+        if (isBackgroundLocationPermissionGranted) {
+            return
+        }
+        runOnUiThread {
+            alert {
+                title = "Background Location permission required"
+                message = "Starting from Android M (6.0), the system requires apps to be granted " +
+                    "background location access in order to scan for BLE devices."
+                isCancelable = false
+                positiveButton(android.R.string.ok) {
+                    requestPermission(
+                        Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+                        PERMISSION_REQUEST_BACKGROUND_LOCATION
+                    )
+                }
+            }.show()
+        }
     }
 
-    private fun EditText.showKeyboard() {
-        val inputMethodManager = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        requestFocus()
-        inputMethodManager.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+    private fun requestSMSPermission() {
+        if (isSMSPermissionGranted) {
+            return
+        }
+        runOnUiThread {
+            alert {
+                title = "SMS permission required"
+                message = "The system requires apps to be granted SMS access in order to sent SMS."
+                isCancelable = false
+                positiveButton(android.R.string.ok) {
+                    requestPermission(
+                        Manifest.permission.SEND_SMS,
+                        SEND_SMS_PERMISSION_REQUEST_CODE
+                    )
+                }
+            }.show()
+        }
     }
 
-    private fun String.hexToBytes() =
-        this.chunked(2).map { it.toUpperCase(Locale.US).toInt(16).toByte() }.toByteArray()
+    private fun promptEnableBluetooth() {
+        if (!bluetoothAdapter.isEnabled) {
+            val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+            startActivityForResult(enableBtIntent, ENABLE_BLUETOOTH_REQUEST_CODE)
+        }
+    }
+
+    /*******************************************
+     * Extension functions
+     *******************************************/
+
+    private fun Context.hasPermission(permissionType: String): Boolean {
+        return ContextCompat.checkSelfPermission(this, permissionType) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun Activity.requestPermission(permission: String, requestCode: Int) {
+        ActivityCompat.requestPermissions(this, arrayOf(permission), requestCode)
+    }
+
 }
