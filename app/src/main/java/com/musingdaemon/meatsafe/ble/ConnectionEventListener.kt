@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.punchthrough.blestarterappandroid.ble
+package com.musingdaemon.meatsafe.ble
 
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
