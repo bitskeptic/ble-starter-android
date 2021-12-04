@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.punchthrough.blestarterappandroid
+package com.musingdaemon.meatsafe
 
 import org.junit.Assert.assertEquals
 import org.junit.Test

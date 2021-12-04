@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.punchthrough.blestarterappandroid
+package com.musingdaemon.meatsafe
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -38,9 +38,9 @@ import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.punchthrough.blestarterappandroid.ble.ConnectionEventListener
-import com.punchthrough.blestarterappandroid.ble.ConnectionManager
-import com.punchthrough.blestarterappandroid.ble.toHexString
+import com.musingdaemon.meatsafe.ble.ConnectionEventListener
+import com.musingdaemon.meatsafe.ble.ConnectionManager
+import com.musingdaemon.meatsafe.ble.toHexString
 import kotlinx.android.synthetic.main.activity_ble_operations.log_scroll_view
 import kotlinx.android.synthetic.main.activity_ble_operations.log_text_view
 import org.jetbrains.anko.alert
@@ -60,6 +60,7 @@ private const val ENABLE_BLUETOOTH_REQUEST_CODE = 1
 private const val LOCATION_PERMISSION_REQUEST_CODE = 2
 private const val PERMISSION_REQUEST_BACKGROUND_LOCATION = 3
 
+const val RECEIVE_BROADCAST = "com.musingdaemon.meatsafe.STATUS"
 const val SECONDS_BETWEEN_SMS_WARNINGS = 600L
 const val TEMP_CELCIUS_WARNING_LEVEL = -15.0
 const val SENSORBUG_UUID = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
@@ -111,7 +112,6 @@ class BleOperationsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         ConnectionManager.registerListener(connectionEventListener)
         setContentView(R.layout.activity_ble_operations)
-        requestSMSPermission()
         val intentFilter = IntentFilter()
         intentFilter.addAction(RECEIVE_BROADCAST)
         applicationContext.registerReceiver(bReceiver, intentFilter)
@@ -126,9 +126,9 @@ class BleOperationsActivity : AppCompatActivity() {
     override fun onDestroy() {
         ConnectionManager.unregisterListener(connectionEventListener)
         ConnectionManager.teardownConnection(device)
-        applicationContext.unregisterReceiver(bReceiver);
-        super.onDestroy()
+        applicationContext.unregisterReceiver(bReceiver)
         log("Destroy Complete")
+        super.onDestroy()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -158,6 +158,12 @@ class BleOperationsActivity : AppCompatActivity() {
             PERMISSION_REQUEST_BACKGROUND_LOCATION -> {
                 if (grantResults.firstOrNull() == PackageManager.PERMISSION_DENIED) {
                     requestBackgroundLocationPermission()
+                }
+            }
+
+            SEND_SMS_PERMISSION_REQUEST_CODE -> {
+                if (grantResults.firstOrNull() == PackageManager.PERMISSION_DENIED) {
+                    requestSMSPermission()
                 }
             }
         }
@@ -370,14 +376,18 @@ class BleOperationsActivity : AppCompatActivity() {
     }
 
     private fun sendSMS(message: String) {
-        val smsManager = SmsManager.getDefault()
-        smsManager.sendTextMessage(
-            DESTINATION_PHONE_NUMBER,
-            null,
-            message,
-            null,
-            null
-        )
+        if (isSMSPermissionGranted) {
+            val smsManager = SmsManager.getDefault()
+            smsManager.sendTextMessage(
+                DESTINATION_PHONE_NUMBER,
+                null,
+                message,
+                null,
+                null
+            )
+        } else {
+            requestSMSPermission()
+        }
     }
 
     private val bReceiver: BroadcastReceiver = object : BroadcastReceiver() {

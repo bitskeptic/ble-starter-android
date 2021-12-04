@@ -17,7 +17,7 @@
 
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    package="com.punchthrough.blestarterappandroid">
+    package="com.musingdaemon.meatsafe">
 
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
@@ -44,7 +44,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <intent-filter>
-                <action android:name="com.punchthrough.blestarterappandroid.STATUS" />
+                <action android:name="com.musingdaemon.meatsafe.STATUS" />
             </intent-filter>
         </activity>
     </application>
