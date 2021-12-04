@@ -26,8 +26,10 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -45,9 +47,13 @@ import org.jetbrains.anko.alert
 import timber.log.Timber
 import java.text.SimpleDateFormat
 import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+
 
 private const val SEND_SMS_PERMISSION_REQUEST_CODE = 0
 private const val ENABLE_BLUETOOTH_REQUEST_CODE = 1
@@ -90,6 +96,8 @@ class BleOperationsActivity : AppCompatActivity() {
 
     private var lastSmsTime = Instant.EPOCH
 
+    private var nextStatusUpdateDate = LocalDateTime.of(LocalDate.now().plusDays(1), LocalTime.NOON)
+
     private val isLocationPermissionGranted
         get() = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
 
@@ -104,6 +112,9 @@ class BleOperationsActivity : AppCompatActivity() {
         ConnectionManager.registerListener(connectionEventListener)
         setContentView(R.layout.activity_ble_operations)
         requestSMSPermission()
+        val intentFilter = IntentFilter()
+        intentFilter.addAction(RECEIVE_BROADCAST)
+        applicationContext.registerReceiver(bReceiver, intentFilter)
         if (!isScanning) {
             startBleScan()
         }
@@ -115,6 +126,7 @@ class BleOperationsActivity : AppCompatActivity() {
     override fun onDestroy() {
         ConnectionManager.unregisterListener(connectionEventListener)
         ConnectionManager.teardownConnection(device)
+        applicationContext.unregisterReceiver(bReceiver);
         super.onDestroy()
         log("Destroy Complete")
     }
@@ -181,14 +193,7 @@ class BleOperationsActivity : AppCompatActivity() {
             }
 
             onDisconnect = {
-                val smsManager = SmsManager.getDefault()
-                smsManager.sendTextMessage(
-                    DESTINATION_PHONE_NUMBER,
-                    null,
-                    "WARN: The connection to the main freezer sensor was lost",
-                    null,
-                    null
-                )
+                sendSMS("WARN: The connection to the main freezer sensor was lost")
                 log("Connection lost")
                 startBleScan()
             }
@@ -218,17 +223,24 @@ class BleOperationsActivity : AppCompatActivity() {
                             .toShort() * 0.0625
                     if (temp > TEMP_CELCIUS_WARNING_LEVEL && lastSmsTime.plusSeconds(
                             SECONDS_BETWEEN_SMS_WARNINGS
-                        ).isBefore(Instant.now())
+                        ).isBefore(
+                            Instant.now()
+                        )
                     ) {
                         log("Freezer temp is $temp. Sending SMS warning.")
-                        val smsManager = SmsManager.getDefault()
-                        smsManager.sendTextMessage(
-                            DESTINATION_PHONE_NUMBER,
-                            null,
-                            "WARN: The temperature of the main freezer is %.2fC".format(temp),
-                            null,
-                            null
+                        sendSMS("WARN: The temperature of the main freezer is %.2fC".format(temp))
+                        lastSmsTime = Instant.now()
+                    }
+                    if (nextStatusUpdateDate.isBefore(LocalDateTime.now()) && lastSmsTime.plusSeconds(
+                            10
+                        ).isBefore(
+                            Instant.now()
                         )
+                    ) {
+                        log("Sending status update. Freezer temp is $temp.")
+                        sendSMS("STATUS: The temperature of the main freezer is %.2fC".format(temp))
+                        nextStatusUpdateDate =
+                            LocalDateTime.of(LocalDate.now().plusDays(1), LocalTime.NOON)
                         lastSmsTime = Instant.now()
                     }
                 }
@@ -237,14 +249,7 @@ class BleOperationsActivity : AppCompatActivity() {
             onNotificationsEnabled = { _, characteristic ->
                 log("Enabled notifications on ${characteristic.uuid}")
                 notifyingCharacteristics.add(characteristic.uuid)
-                val smsManager = SmsManager.getDefault()
-                smsManager.sendTextMessage(
-                    DESTINATION_PHONE_NUMBER,
-                    null,
-                    "SUCCESS: The connection to the main freezer sensor was restored",
-                    null,
-                    null
-                )
+                sendSMS("SUCCESS: The connection to the main freezer sensor was restored")
             }
 
             onNotificationsDisabled = { _, characteristic ->
@@ -256,14 +261,7 @@ class BleOperationsActivity : AppCompatActivity() {
 
     private fun startBleScan() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !isLocationPermissionGranted) {
-            val smsManager = SmsManager.getDefault()
-            smsManager.sendTextMessage(
-                DESTINATION_PHONE_NUMBER,
-                null,
-                "WARN: Location permission denied",
-                null,
-                null
-            )
+            sendSMS("WARN: Location permission denied")
             requestLocationPermission()
         } else if (!isBackgroundLocationPermissionGranted) {
             requestBackgroundLocationPermission()
@@ -368,6 +366,25 @@ class BleOperationsActivity : AppCompatActivity() {
         if (!bluetoothAdapter.isEnabled) {
             val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
             startActivityForResult(enableBtIntent, ENABLE_BLUETOOTH_REQUEST_CODE)
+        }
+    }
+
+    private fun sendSMS(message: String) {
+        val smsManager = SmsManager.getDefault()
+        smsManager.sendTextMessage(
+            DESTINATION_PHONE_NUMBER,
+            null,
+            message,
+            null,
+            null
+        )
+    }
+
+    private val bReceiver: BroadcastReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == RECEIVE_BROADCAST) {
+                nextStatusUpdateDate = LocalDateTime.now()
+            }
         }
     }
 
